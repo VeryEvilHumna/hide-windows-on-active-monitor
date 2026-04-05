@@ -35,9 +35,10 @@ pub unsafe fn create(hwnd: HWND) {
     }
 }
 
-pub unsafe fn remove() {
+pub unsafe fn remove(hwnd: HWND) {
     let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
     nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+    nid.hWnd = hwnd;
     nid.uID = 1;
     let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
 }

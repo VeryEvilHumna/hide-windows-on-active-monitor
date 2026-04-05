@@ -4,8 +4,10 @@ use std::mem;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use windows::Win32::Foundation::*;
+use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::*;
+use windows::Win32::System::Threading::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
@@ -22,6 +24,7 @@ const ID_MENU_AUTOSTART: u32 = 1001;
 const ID_MENU_EXIT: u32 = 1002;
 
 static OWN_HWND: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+static INSTANCE_MUTEX: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 unsafe fn is_app_window(hwnd: HWND) -> bool {
     if HWND(OWN_HWND.load(Ordering::Relaxed)) == hwnd {
@@ -63,13 +66,15 @@ unsafe fn is_app_window(hwnd: HWND) -> bool {
     }
 
     let mut cloaked: u32 = 0;
-    let result = SendMessageW(
+    if DwmGetWindowAttribute(
         hwnd,
-        0x02B1,
-        Some(WPARAM(14usize)),
-        Some(LPARAM(&mut cloaked as *mut u32 as isize)),
-    );
-    if result.0 == 0 && cloaked != 0 {
+        DWMWA_CLOAKED,
+        &mut cloaked as *mut _ as *mut std::ffi::c_void,
+        std::mem::size_of::<u32>() as u32,
+    )
+    .is_ok()
+        && cloaked != 0
+    {
         return false;
     }
 
@@ -170,6 +175,7 @@ unsafe fn perform_toggle() {
         debug::log(&format!("restoring windows on {}", monitor_name));
         state::restore(&monitor_name);
     } else {
+        state::restore_stale_entries(&monitor_name);
         debug::log(&format!("hiding windows on {}", monitor_name));
         let windows = window::collect_app_windows(&monitor_rect);
         if windows.is_empty() {
@@ -189,8 +195,12 @@ unsafe extern "system" fn wndproc(
 ) -> LRESULT {
     match msg {
         WM_DESTROY => {
-            tray::remove();
+            tray::remove(hwnd);
             hook::uninstall();
+            let mutex_ptr = INSTANCE_MUTEX.swap(std::ptr::null_mut(), Ordering::Relaxed);
+            if !mutex_ptr.is_null() {
+                let _ = CloseHandle(HANDLE(mutex_ptr));
+            }
             PostQuitMessage(0);
             LRESULT(0)
         }
@@ -228,26 +238,26 @@ unsafe extern "system" fn wndproc(
     }
 }
 
-unsafe fn ensure_single_instance() -> bool {
-    use windows::Win32::System::Threading::*;
-
+unsafe fn ensure_single_instance() -> Option<HANDLE> {
     match CreateMutexW(None, false, w!("HideWinHide_Mutex")) {
         Ok(mutex) => {
             if GetLastError() == ERROR_ALREADY_EXISTS {
                 let _ = CloseHandle(mutex);
-                return false;
+                return None;
             }
-            true
+            Some(mutex)
         }
-        Err(_) => false,
+        Err(_) => None,
     }
 }
 
 fn main() -> windows::core::Result<()> {
     unsafe {
-        if !ensure_single_instance() {
-            return Ok(());
-        }
+        let mutex = match ensure_single_instance() {
+            Some(h) => h,
+            None => return Ok(()),
+        };
+        INSTANCE_MUTEX.store(mutex.0, Ordering::Relaxed);
 
         let hinstance = GetModuleHandleW(None)?;
 
@@ -282,7 +292,6 @@ fn main() -> windows::core::Result<()> {
 
         hook::install(hinstance, hwnd);
         tray::create(hwnd);
-        autostart::ensure_registered();
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {

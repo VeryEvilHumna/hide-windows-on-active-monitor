@@ -49,8 +49,13 @@ unsafe fn write_registry_entry() {
     let mut buf: [u16; 1024] = [0; 1024];
     let len = GetModuleFileNameW(None, &mut buf);
     if len > 0 {
+        let mut quoted: Vec<u16> = Vec::with_capacity(len as usize + 3);
+        quoted.push(b'"' as u16);
+        quoted.extend_from_slice(&buf[..len as usize]);
+        quoted.push(b'"' as u16);
+        quoted.push(0);
         let path_bytes: &[u8] =
-            std::slice::from_raw_parts(buf.as_ptr() as *const u8, (len as usize + 1) * 2);
+            std::slice::from_raw_parts(quoted.as_ptr() as *const u8, quoted.len() * 2);
         let _ = RegSetValueExW(
             key,
             w!("HideWinHide"),
@@ -63,6 +68,7 @@ unsafe fn write_registry_entry() {
     let _ = RegCloseKey(key);
 }
 
+#[allow(dead_code)]
 pub unsafe fn ensure_registered() {
     if !is_enabled() {
         write_registry_entry();

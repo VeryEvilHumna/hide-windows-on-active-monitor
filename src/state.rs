@@ -8,6 +8,13 @@ use windows::core::w;
 
 use crate::debug;
 
+fn lock_states<'a>() -> std::sync::MutexGuard<'a, Option<HashMap<String, Vec<isize>>>> {
+    match STATES.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    }
+}
+
 static STATES: Mutex<Option<HashMap<String, Vec<isize>>>> = Mutex::new(None);
 
 unsafe fn force_set_foreground(hwnd: HWND) {
@@ -25,10 +32,7 @@ unsafe fn force_set_foreground(hwnd: HWND) {
 }
 
 pub unsafe fn is_hidden(monitor_name: &str) -> bool {
-    let mut guard = match STATES.lock() {
-        Ok(g) => g,
-        Err(_) => return false,
-    };
+    let mut guard = lock_states();
     let states = guard.get_or_insert_with(HashMap::new);
     if let Some(windows) = states.get_mut(monitor_name) {
         windows.retain(|&hwnd| IsWindow(Some(HWND(hwnd as *mut _))).as_bool());
@@ -52,10 +56,7 @@ pub unsafe fn hide(monitor_name: &str, windows: &[HWND]) {
         debug::log("force_set_foreground(Progman)");
     }
 
-    let mut guard = match STATES.lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
+    let mut guard = lock_states();
     let states = guard.get_or_insert_with(HashMap::new);
     states.insert(
         monitor_name.to_string(),
@@ -67,10 +68,7 @@ pub unsafe fn hide(monitor_name: &str, windows: &[HWND]) {
 pub unsafe fn restore(monitor_name: &str) {
     debug::log(&format!("restore('{}')", monitor_name));
     let to_restore: Vec<HWND> = {
-        let mut guard = match STATES.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
+        let mut guard = lock_states();
         let states = guard.get_or_insert_with(HashMap::new);
         let stored = states.remove(monitor_name).unwrap_or_default();
         debug::log(&format!("  stored {} hwnds, filtering alive...", stored.len()));
@@ -91,5 +89,38 @@ pub unsafe fn restore(monitor_name: &str) {
     if let Some(&topmost) = to_restore.first() {
         force_set_foreground(topmost);
         debug::log(&format!("  force_set_foreground topmost hwnd={:?}", topmost.0));
+    }
+}
+
+pub unsafe fn restore_stale_entries(current_monitor: &str) {
+    let stale: Vec<(String, Vec<isize>)> = {
+        let mut guard = lock_states();
+        let states = guard.get_or_insert_with(HashMap::new);
+        let mut to_restore = Vec::new();
+        let keys: Vec<String> = states.keys().cloned().collect();
+        for key in keys {
+            if key == current_monitor {
+                continue;
+            }
+            if let Some(windows) = states.remove(&key) {
+                let alive: Vec<isize> = windows
+                    .into_iter()
+                    .filter(|&hwnd| IsWindow(Some(HWND(hwnd as *mut _))).as_bool())
+                    .collect();
+                if !alive.is_empty() {
+                    debug::log(&format!("restore_stale: found {} orphaned windows from '{}'", alive.len(), key));
+                    to_restore.push((key, alive));
+                }
+            }
+        }
+        to_restore
+    };
+
+    for (_name, hwnds) in stale {
+        for &hwnd_raw in hwnds.iter().rev() {
+            let hwnd = HWND(hwnd_raw as *mut _);
+            debug::log(&format!("  restoring orphaned hwnd={:?}", hwnd.0));
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
     }
 }

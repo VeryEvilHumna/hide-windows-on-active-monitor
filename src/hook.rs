@@ -12,6 +12,7 @@ const VK_D: u32 = 0x44;
 
 static HOOK: AtomicUsize = AtomicUsize::new(0);
 static WIN_HELD: AtomicBool = AtomicBool::new(false);
+static D_DOWN: AtomicBool = AtomicBool::new(false);
 static CONSUMED: AtomicBool = AtomicBool::new(false);
 static WIN_PASSTHROUGH: AtomicBool = AtomicBool::new(false);
 static WIN_VK: AtomicU8 = AtomicU8::new(0);
@@ -54,6 +55,7 @@ unsafe extern "system" fn low_level_keyboard_proc(
                     return LRESULT(1);
                 } else if is_up {
                     WIN_HELD.store(false, Ordering::Relaxed);
+                    D_DOWN.store(false, Ordering::Relaxed);
                     if CONSUMED.swap(false, Ordering::Relaxed) {
                         return LRESULT(1);
                     }
@@ -61,27 +63,33 @@ unsafe extern "system" fn low_level_keyboard_proc(
                         return CallNextHookEx(hhook, n_code, w_param, l_param);
                     }
                     let win_vk = WIN_VK.load(Ordering::Relaxed);
-                    keybd_event(win_vk, 0, KEYBD_EVENT_FLAGS(0), 0);
-                    keybd_event(win_vk, 0, KEYEVENTF_KEYUP, 0);
+                    let scan = MapVirtualKeyW(win_vk as u32, MAPVK_VK_TO_VSC) as u8;
+                    keybd_event(win_vk, scan, KEYEVENTF_EXTENDEDKEY, 0);
+                    keybd_event(win_vk, scan, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0);
                     return LRESULT(1);
                 }
             }
             VK_D => {
                 if WIN_HELD.load(Ordering::Relaxed) && is_down {
-                    debug::log("WIN+D -> posting toggle");
-                    CONSUMED.store(true, Ordering::Relaxed);
-                    let hwnd_usize = TARGET_HWND.load(Ordering::Relaxed);
-                    let hwnd = HWND(hwnd_usize as *mut std::ffi::c_void);
-                    let _ = PostMessageW(
-                        Some(hwnd),
-                        crate::WM_TRIGGER_TOGGLE,
-                        WPARAM(0),
-                        LPARAM(0),
-                    );
+                    if !D_DOWN.swap(true, Ordering::Relaxed) {
+                        debug::log("WIN+D -> posting toggle");
+                        CONSUMED.store(true, Ordering::Relaxed);
+                        let hwnd_usize = TARGET_HWND.load(Ordering::Relaxed);
+                        let hwnd = HWND(hwnd_usize as *mut std::ffi::c_void);
+                        let _ = PostMessageW(
+                            Some(hwnd),
+                            crate::WM_TRIGGER_TOGGLE,
+                            WPARAM(0),
+                            LPARAM(0),
+                        );
+                    }
                     return LRESULT(1);
                 }
-                if CONSUMED.load(Ordering::Relaxed) && is_up {
-                    return LRESULT(1);
+                if is_up {
+                    D_DOWN.store(false, Ordering::Relaxed);
+                    if CONSUMED.load(Ordering::Relaxed) {
+                        return LRESULT(1);
+                    }
                 }
             }
             _ => {
@@ -92,7 +100,8 @@ unsafe extern "system" fn low_level_keyboard_proc(
                 {
                     WIN_PASSTHROUGH.store(true, Ordering::Relaxed);
                     let win_vk = WIN_VK.load(Ordering::Relaxed);
-                    keybd_event(win_vk, 0, KEYBD_EVENT_FLAGS(0), 0);
+                    let scan = MapVirtualKeyW(win_vk as u32, MAPVK_VK_TO_VSC) as u8;
+                    keybd_event(win_vk, scan, KEYEVENTF_EXTENDEDKEY, 0);
                 }
             }
         }
