@@ -13,7 +13,7 @@ unsafe fn append_menu_item(menu: HMENU, id: u32, flags: MENU_ITEM_FLAGS, text: &
 }
 
 pub unsafe fn create(hwnd: HWND) {
-    let tooltip = w!("Win+D: Per-monitor hide\0");
+    let tooltip = w!("Win+D: Per-monitor hide");
 
     let icon = LoadIconW(None, IDI_APPLICATION).unwrap_or_default();
 

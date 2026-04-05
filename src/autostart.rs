@@ -24,7 +24,7 @@ pub unsafe fn is_enabled() -> bool {
     result
 }
 
-pub unsafe fn enable() {
+unsafe fn write_registry_entry() {
     let mut key: HKEY = HKEY(std::ptr::null_mut());
     if RegOpenKeyExW(
         HKEY_CURRENT_USER,
@@ -50,7 +50,7 @@ pub unsafe fn enable() {
     let len = GetModuleFileNameW(None, &mut buf);
     if len > 0 {
         let path_bytes: &[u8] =
-            std::slice::from_raw_parts(buf.as_ptr() as *const u8, len as usize * 2);
+            std::slice::from_raw_parts(buf.as_ptr() as *const u8, (len as usize + 1) * 2);
         let _ = RegSetValueExW(
             key,
             w!("HideWinHide"),
@@ -61,6 +61,16 @@ pub unsafe fn enable() {
     }
 
     let _ = RegCloseKey(key);
+}
+
+pub unsafe fn ensure_registered() {
+    if !is_enabled() {
+        write_registry_entry();
+    }
+}
+
+pub unsafe fn enable() {
+    write_registry_entry();
 }
 
 pub unsafe fn disable() {

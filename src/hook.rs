@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 use windows::Win32::Foundation::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -7,14 +7,14 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use crate::debug;
 
 const VK_LWIN: u32 = 0x5B;
-const VK_RWIN: u32 = 0x5C;
+const VK_RWIN: u32 = 0x5c;
 const VK_D: u32 = 0x44;
 
-static mut HHOOK: Option<HHOOK> = None;
-static mut WIN_HELD: bool = false;
-static mut CONSUMED: bool = false;
-static mut WIN_PASSTHROUGH: bool = false;
-static mut WIN_VK: u8 = 0;
+static HOOK: AtomicUsize = AtomicUsize::new(0);
+static WIN_HELD: AtomicBool = AtomicBool::new(false);
+static CONSUMED: AtomicBool = AtomicBool::new(false);
+static WIN_PASSTHROUGH: AtomicBool = AtomicBool::new(false);
+static WIN_VK: AtomicU8 = AtomicU8::new(0);
 static TARGET_HWND: AtomicUsize = AtomicUsize::new(0);
 
 unsafe extern "system" fn low_level_keyboard_proc(
@@ -27,7 +27,13 @@ unsafe extern "system" fn low_level_keyboard_proc(
         let vk = kb.vkCode;
 
         if (kb.flags & KBDLLHOOKSTRUCT_FLAGS(0x10)) != KBDLLHOOKSTRUCT_FLAGS(0) {
-            return CallNextHookEx(HHOOK, n_code, w_param, l_param);
+            let hook = HOOK.load(Ordering::Relaxed);
+            return CallNextHookEx(
+                if hook == 0 { None } else { Some(HHOOK(hook as *mut _)) },
+                n_code,
+                w_param,
+                l_param,
+            );
         }
 
         let is_down =
@@ -35,33 +41,35 @@ unsafe extern "system" fn low_level_keyboard_proc(
         let is_up =
             w_param.0 == WM_KEYUP as usize || w_param.0 == WM_SYSKEYUP as usize;
 
+        let hook = HOOK.load(Ordering::Relaxed);
+        let hhook = if hook == 0 { None } else { Some(HHOOK(hook as *mut _)) };
+
         match vk {
             VK_LWIN | VK_RWIN => {
                 if is_down {
-                    WIN_HELD = true;
-                    WIN_VK = vk as u8;
-                    CONSUMED = false;
-                    WIN_PASSTHROUGH = false;
+                    WIN_HELD.store(true, Ordering::Relaxed);
+                    WIN_VK.store(vk as u8, Ordering::Relaxed);
+                    CONSUMED.store(false, Ordering::Relaxed);
+                    WIN_PASSTHROUGH.store(false, Ordering::Relaxed);
                     return LRESULT(1);
                 } else if is_up {
-                    WIN_HELD = false;
-                    if CONSUMED {
-                        CONSUMED = false;
+                    WIN_HELD.store(false, Ordering::Relaxed);
+                    if CONSUMED.swap(false, Ordering::Relaxed) {
                         return LRESULT(1);
                     }
-                    if WIN_PASSTHROUGH {
-                        WIN_PASSTHROUGH = false;
-                        return CallNextHookEx(HHOOK, n_code, w_param, l_param);
+                    if WIN_PASSTHROUGH.swap(false, Ordering::Relaxed) {
+                        return CallNextHookEx(hhook, n_code, w_param, l_param);
                     }
-                    keybd_event(WIN_VK, 0, KEYBD_EVENT_FLAGS(0), 0);
-                    keybd_event(WIN_VK, 0, KEYEVENTF_KEYUP, 0);
+                    let win_vk = WIN_VK.load(Ordering::Relaxed);
+                    keybd_event(win_vk, 0, KEYBD_EVENT_FLAGS(0), 0);
+                    keybd_event(win_vk, 0, KEYEVENTF_KEYUP, 0);
                     return LRESULT(1);
                 }
             }
             VK_D => {
-                if WIN_HELD && is_down {
+                if WIN_HELD.load(Ordering::Relaxed) && is_down {
                     debug::log("WIN+D -> posting toggle");
-                    CONSUMED = true;
+                    CONSUMED.store(true, Ordering::Relaxed);
                     let hwnd_usize = TARGET_HWND.load(Ordering::Relaxed);
                     let hwnd = HWND(hwnd_usize as *mut std::ffi::c_void);
                     let _ = PostMessageW(
@@ -72,20 +80,27 @@ unsafe extern "system" fn low_level_keyboard_proc(
                     );
                     return LRESULT(1);
                 }
-                if CONSUMED && is_up {
+                if CONSUMED.load(Ordering::Relaxed) && is_up {
                     return LRESULT(1);
                 }
             }
             _ => {
-                if WIN_HELD && !CONSUMED && !WIN_PASSTHROUGH && is_down {
-                    WIN_PASSTHROUGH = true;
-                    keybd_event(WIN_VK, 0, KEYBD_EVENT_FLAGS(0), 0);
+                if WIN_HELD.load(Ordering::Relaxed)
+                    && !CONSUMED.load(Ordering::Relaxed)
+                    && !WIN_PASSTHROUGH.load(Ordering::Relaxed)
+                    && is_down
+                {
+                    WIN_PASSTHROUGH.store(true, Ordering::Relaxed);
+                    let win_vk = WIN_VK.load(Ordering::Relaxed);
+                    keybd_event(win_vk, 0, KEYBD_EVENT_FLAGS(0), 0);
                 }
             }
         }
     }
 
-    CallNextHookEx(HHOOK, n_code, w_param, l_param)
+    let hook = HOOK.load(Ordering::Relaxed);
+    let hhook = if hook == 0 { None } else { Some(HHOOK(hook as *mut _)) };
+    CallNextHookEx(hhook, n_code, w_param, l_param)
 }
 
 pub unsafe fn install(hinstance: super::HMODULE, hwnd: super::HWND) {
@@ -99,18 +114,17 @@ pub unsafe fn install(hinstance: super::HMODULE, hwnd: super::HWND) {
     ) {
         Ok(h) => {
             debug::log("keyboard hook installed successfully");
-            HHOOK = Some(h);
+            HOOK.store(h.0 as usize, Ordering::Relaxed);
         }
         Err(_) => {
             debug::log("FAILED to install keyboard hook");
-            return;
         }
     }
 }
 
 pub unsafe fn uninstall() {
-    if let Some(h) = HHOOK {
-        let _ = UnhookWindowsHookEx(h);
-        HHOOK = None;
+    let hook = HOOK.swap(0, Ordering::Relaxed);
+    if hook != 0 {
+        let _ = UnhookWindowsHookEx(HHOOK(hook as *mut _));
     }
 }

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use windows::Win32::Foundation::*;
 use windows::Win32::System::Threading::*;
@@ -7,17 +8,7 @@ use windows::core::w;
 
 use crate::debug;
 
-static mut STATES: Option<HashMap<String, Vec<isize>>> = None;
-
-unsafe fn with_states<F, R>(f: F) -> R
-where
-    F: FnOnce(&mut HashMap<String, Vec<isize>>) -> R,
-{
-    if STATES.is_none() {
-        STATES = Some(HashMap::new());
-    }
-    f(STATES.as_mut().unwrap_unchecked())
-}
+static STATES: Mutex<Option<HashMap<String, Vec<isize>>>> = Mutex::new(None);
 
 unsafe fn force_set_foreground(hwnd: HWND) {
     let fg = GetForegroundWindow();
@@ -34,19 +25,19 @@ unsafe fn force_set_foreground(hwnd: HWND) {
 }
 
 pub unsafe fn is_hidden(monitor_name: &str) -> bool {
-    with_states(|s: &mut HashMap<String, Vec<isize>>| {
-        if let Some(windows) = s.get(monitor_name) {
-            let any_alive = windows
-                .iter()
-                .copied()
-                .any(|hwnd| IsWindow(Some(HWND(hwnd as *mut _))).as_bool());
-            debug::log(&format!("is_hidden('{}'): stored={} windows, any_alive={}", monitor_name, windows.len(), any_alive));
-            any_alive
-        } else {
-            debug::log(&format!("is_hidden('{}'): no entry in state", monitor_name));
-            false
-        }
-    })
+    let mut guard = match STATES.lock() {
+        Ok(g) => g,
+        Err(_) => return false,
+    };
+    let states = guard.get_or_insert_with(HashMap::new);
+    if let Some(windows) = states.get_mut(monitor_name) {
+        windows.retain(|&hwnd| IsWindow(Some(HWND(hwnd as *mut _))).as_bool());
+        debug::log(&format!("is_hidden('{}'): {} alive windows after pruning", monitor_name, windows.len()));
+        !windows.is_empty()
+    } else {
+        debug::log(&format!("is_hidden('{}'): no entry in state", monitor_name));
+        false
+    }
 }
 
 pub unsafe fn hide(monitor_name: &str, windows: &[HWND]) {
@@ -61,31 +52,44 @@ pub unsafe fn hide(monitor_name: &str, windows: &[HWND]) {
         debug::log("force_set_foreground(Progman)");
     }
 
-    with_states(|s: &mut HashMap<String, Vec<isize>>| {
-        s.insert(
-            monitor_name.to_string(),
-            windows.iter().map(|h| h.0 as isize).collect(),
-        );
-    });
+    let mut guard = match STATES.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    let states = guard.get_or_insert_with(HashMap::new);
+    states.insert(
+        monitor_name.to_string(),
+        windows.iter().map(|h| h.0 as isize).collect(),
+    );
     debug::log(&format!("hide('{}'): state saved", monitor_name));
 }
 
 pub unsafe fn restore(monitor_name: &str) {
     debug::log(&format!("restore('{}')", monitor_name));
-    let to_restore: Vec<HWND> = with_states(|s: &mut HashMap<String, Vec<isize>>| {
-        let stored = s.remove(monitor_name).unwrap_or_default();
+    let to_restore: Vec<HWND> = {
+        let mut guard = match STATES.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        let states = guard.get_or_insert_with(HashMap::new);
+        let stored = states.remove(monitor_name).unwrap_or_default();
         debug::log(&format!("  stored {} hwnds, filtering alive...", stored.len()));
         stored
             .into_iter()
             .filter(|&hwnd| IsWindow(Some(HWND(hwnd as *mut _))).as_bool())
             .map(|hwnd| HWND(hwnd as *mut _))
             .collect()
-    });
+    };
 
     debug::log(&format!("  {} windows to restore (reverse z-order)", to_restore.len()));
     for hwnd in to_restore.iter().rev() {
         debug::log(&format!("  ShowWindow SW_RESTORE hwnd={:?}", hwnd.0));
         let result = ShowWindow(*hwnd, SW_RESTORE);
         debug::log(&format!("  ShowWindow result={}", result.0));
+    }
+
+    if let Some(&topmost) = to_restore.first() {
+        force_set_foreground(topmost);
+        debug::log(&format!("  force_set_foreground topmost hwnd={:?}", topmost.0));
     }
 }

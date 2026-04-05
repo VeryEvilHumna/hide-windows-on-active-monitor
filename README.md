@@ -9,6 +9,8 @@ Hold **Win** and tap **D** repeatedly to toggle.
 - System tray with "Start with Windows" (on by default) and "Exit"
 - Single instance, no config needed
 
+Completely vibecoded.
+
 ## Building
 
 Requires Rust with `x86_64-pc-windows-gnu` target and MinGW:

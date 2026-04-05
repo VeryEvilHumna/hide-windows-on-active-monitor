@@ -1,5 +1,4 @@
 #![windows_subsystem = "windows"]
-#![allow(static_mut_refs)]
 
 use std::mem;
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -21,8 +20,6 @@ const WM_TRAYICON: u32 = WM_USER + 1;
 const WM_TRIGGER_TOGGLE: u32 = WM_USER + 2;
 const ID_MENU_AUTOSTART: u32 = 1001;
 const ID_MENU_EXIT: u32 = 1002;
-const DWMWA_CLOAKED: u32 = 14;
-const WM_DWM_GETATTRIBUTE: u32 = 0x02B1;
 
 static OWN_HWND: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
 
@@ -68,20 +65,15 @@ unsafe fn is_app_window(hwnd: HWND) -> bool {
     let mut cloaked: u32 = 0;
     let result = SendMessageW(
         hwnd,
-        WM_DWM_GETATTRIBUTE,
-        Some(WPARAM(DWMWA_CLOAKED as usize)),
+        0x02B1,
+        Some(WPARAM(14usize)),
         Some(LPARAM(&mut cloaked as *mut u32 as isize)),
     );
     if result.0 == 0 && cloaked != 0 {
         return false;
     }
 
-    let mut title_buf: [u16; 512] = [0; 512];
-    let title_len = GetWindowTextW(hwnd, &mut title_buf);
-    let title = String::from_utf16_lossy(
-        &title_buf.iter().take(title_len as usize).copied().collect::<Vec<_>>(),
-    );
-    debug::log(&format!("is_app_window PASS: hwnd={:?} class='{}' title='{}'", hwnd.0, class_name, title));
+    debug::log(&format!("is_app_window PASS: hwnd={:?} class='{}'", hwnd.0, class_name));
 
     true
 }
@@ -266,7 +258,10 @@ fn main() -> windows::core::Result<()> {
             ..Default::default()
         };
 
-        RegisterClassW(&wc);
+        if RegisterClassW(&wc) == 0 {
+            debug::log("RegisterClassW FAILED");
+            return Err(windows::core::Error::from_win32());
+        }
 
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
@@ -287,7 +282,7 @@ fn main() -> windows::core::Result<()> {
 
         hook::install(hinstance, hwnd);
         tray::create(hwnd);
-        autostart::enable();
+        autostart::ensure_registered();
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
