@@ -1,0 +1,61 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp",
+      "enabled": true
+    },
+    "web-search-prime": {
+      "type": "remote",
+      "url": "https://api.z.ai/api/mcp/web_search_prime/mcp",
+      "headers": {
+          "Authorization": "Bearer e2c62a0f61a242a2969b5acf7b2b5800.Lij8d2DBgdcpocOL"
+      }
+    }
+  },
+  "provider": {
+    "zai-coding-plan": {
+       "models": {
+          "glm-5-turbo": {
+            "name": "GLM-5 Turbo",
+            "limit": {
+              "context": 204000,
+              "output": 16384
+            }
+          },
+          "glm-5.1": {
+            "name": "GLM-5.1",
+            "reasoning": true,
+            "limit": {
+              "context": 204800,
+              "output": 131072
+            }
+          }
+       }
+     }
+  },
+  "agent": {
+    "explore": {
+      "mode": "subagent",
+      "model": "zai-coding-plan/glm-4.7",
+      "permission": {
+        "edit": "deny",
+        "write": "deny",
+        "bash": "allow",
+        "webfetch": "allow",
+        "read": "allow"
+      }
+    },
+    "plan": {
+      "mode": "primary",
+      "model": "zai-coding-plan/glm-5.1",
+      "permission": {
+        "write": "ask",
+        "edit": "ask",
+        "bash": "allow"
+      }
+    },
+  },
+  "snapshot": false
+}
