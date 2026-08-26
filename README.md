@@ -11,6 +11,10 @@ Hold **Win** and tap **D** repeatedly to toggle.
 
 Completely vibecoded.
 
+## No longer supported 
+
+I migrated to Linux and not interested in supporting the software for OS I no longer use. This utility works decent but still has bugs
+
 ## Building
 
 Requires Rust with `x86_64-pc-windows-gnu` target and MinGW:
